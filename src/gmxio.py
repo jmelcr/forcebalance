@@ -1267,7 +1267,7 @@ class GMX(Engine):
             if verbose: logger.info("Equilibrating...\n")
             eq_opts = deepcopy(md_opts)
             eq_opts.update({"nsteps" : nequil, "nstenergy" : 0, "nstxout" : 0,
-                            "gen-vel": "yes", "gen-temp" : temperature, "gen-seed" : random.randrange(100000,999999)})
+                            "gen-vel": "yes", "gen-temp" : temperature[0], "gen-seed" : random.randrange(100000,999999)})
             eq_defs = deepcopy(md_defs)
             if "pcoupl" in eq_defs and hasattr(self, 'gmx_eq_barostat'):
                 eq_opts["pcoupl"] = self.gmx_eq_barostat
