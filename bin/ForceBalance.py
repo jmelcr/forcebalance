@@ -3,7 +3,9 @@
 """ @package ForceBalance
 
 Executable  script for starting ForceBalance. """
+from __future__ import print_function
 
+from builtins import range
 import os, sys, re
 import argparse
 from forcebalance.parser import parse_inputs
@@ -58,7 +60,7 @@ def process(word, color):
     return Answer
 
 def main():
-    printcool("Welcome to ForceBalance version 1.3! =D\nForce Field Optimization System\n\nAuthors:\nLee-Ping Wang\nArthur Vigil, Keri McKiernan,\nErik Brandt, Johnny Israeli", ansi="1", bold=True, minwidth=64)
+    printcool("Welcome to ForceBalance version 1.7.0! =D\nForce Field Optimization System\n\nAuthors:\nLee-Ping Wang\nYudong Qiu, Keri A. McKiernan\nJeffrey R. Wagner, Hyesu Jang, Simon Boothroyd\nArthur Vigil, Erik G. Brandt, Johnny Israeli", ansi="1", bold=True, minwidth=64)
     logostr = """
                           ,'+++                                        
                        ,++++++.      .:,,.                              
@@ -141,7 +143,7 @@ def main():
                     newline += whites[i]
                 except: pass
                 i += 1
-        print newline
+        print(newline)
 
     parser = argparse.ArgumentParser(description="Force Field Optimization System")
     parser.add_argument("-c", "--continue", action="store_true", help="Continue from a previous run")

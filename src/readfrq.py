@@ -1,14 +1,19 @@
 #!/usr/bin/env python
 
+from __future__ import division
+from __future__ import print_function
+from __future__ import absolute_import
+from builtins import zip
+from builtins import range
 import os, sys, re
 import numpy as np
-from molecule import Molecule, Elements
-from nifty import isint, isfloat
+from .molecule import Molecule, Elements
+from .nifty import isint, isfloat
 
 np.set_printoptions(precision=4)
 
 def print_mode(M, mode):
-    print '\n'.join(['%-3s' % M.elem[ii] + ' '.join(['% 7.3f' % j for j in i]) for ii, i in enumerate(mode)])
+    print('\n'.join(['%-3s' % M.elem[ii] + ' '.join(['% 7.3f' % j for j in i]) for ii, i in enumerate(mode)]))
 
 def read_frq_gau(gauout):
     XMode = 0
@@ -89,6 +94,9 @@ def read_frq_tc(tcout, scrdir='scr'):
             if len(ls) == 8 and ls[0].isdigit():
                 freqs.append(float(ls[2]))
                 intensities.append(float(ls[3]))
+            elif len(ls) == 3 and ls[2].endswith('i'):
+                freqs.append(-1*float(ls[2][:-1]))
+                intensities.append(0.0)
             if line.strip() == '':
                 break
     if found_vib is False:
@@ -252,7 +260,7 @@ def scale_freqs(arr):
     hscal = 0.960
     # Low-frequency scaling factor for MP2/aTZ
     lscal = 1.012
-    print "  Freq(Old)  Freq(New)  RawShift  NewShift   DShift"
+    print("  Freq(Old)  Freq(New)  RawShift  NewShift   DShift")
     def scale_one(frq):
         if frq > div:
             if hscal < 1.0:
@@ -271,7 +279,7 @@ def scale_freqs(arr):
                 att = (frq-div)/(frq-hscal*div)
                 shift = (hscal - 1.0) * frq
                 newshift = att*shift
-                print "%10.3f %10.3f  % 9.3f % 9.3f % 8.3f" % (frq, frq+newshift, shift, newshift, newshift-shift)
+                print("%10.3f %10.3f  % 9.3f % 9.3f % 8.3f" % (frq, frq+newshift, shift, newshift, newshift-shift))
                 newfrq = frq+newshift
                 return newfrq
             else:
@@ -284,7 +292,7 @@ def scale_freqs(arr):
                 att = (frq-div)/(frq-lscal*div)
                 shift = (lscal - 1.0) * frq
                 newshift = att*shift
-                print "%10.3f %10.3f  % 9.3f % 9.3f % 8.3f" % (frq, frq+newshift, shift, newshift, newshift-shift)
+                print("%10.3f %10.3f  % 9.3f % 9.3f % 8.3f" % (frq, frq+newshift, shift, newshift, newshift-shift))
                 newfrq = frq+newshift
                 return newfrq
             else:
@@ -311,34 +319,34 @@ def main():
     qcfrqs, qcmodes, _, __, ___ = read_frq_gen(sys.argv[2])
     gaufrqs, gaumodes, _, __, ___ = read_frq_gen(sys.argv[3])
     for i, j, ii, jj, iii, jjj in zip(psifrqs, psimodes, qcfrqs, qcmodes, gaufrqs, gaumodes):
-        print "PsiFreq:", i, "QCFreq", ii, "GauFreq", iii
-        print "PsiMode:", np.linalg.norm(j)
+        print("PsiFreq:", i, "QCFreq", ii, "GauFreq", iii)
+        print("PsiMode:", np.linalg.norm(j))
         print_mode(Mqc, j)
-        print "QCMode:", np.linalg.norm(jj)
+        print("QCMode:", np.linalg.norm(jj))
         if np.linalg.norm(j - jj) < np.linalg.norm(j + jj):
             print_mode(Mqc, jj)
         else:
             print_mode(Mqc, -1 * jj)
-        print "GauMode:", np.linalg.norm(jjj)
+        print("GauMode:", np.linalg.norm(jjj))
         if np.linalg.norm(j - jjj) < np.linalg.norm(j + jjj):
             print_mode(Mqc, jjj)
         else:
             print_mode(Mqc, -1 * jjj)
         
-        print "DMode (QC-Gau):", 
+        print("DMode (QC-Gau):", end=' ') 
         if np.linalg.norm(jj - jjj) < np.linalg.norm(jj + jjj):
-            print np.linalg.norm(jj - jjj)
+            print(np.linalg.norm(jj - jjj))
             print_mode(Mqc, jj - jjj)
         else:
-            print np.linalg.norm(jj + jjj)
+            print(np.linalg.norm(jj + jjj))
             print_mode(Mqc, jj + jjj)
 
-        print "DMode (QC-Psi):", 
+        print("DMode (QC-Psi):", end=' ') 
         if np.linalg.norm(jj - j) < np.linalg.norm(jj + j):
-            print np.linalg.norm(jj - j)
+            print(np.linalg.norm(jj - j))
             print_mode(Mqc, jj - j)
         else:
-            print np.linalg.norm(jj + j)
+            print(np.linalg.norm(jj + j))
             print_mode(Mqc, jj + j)
 
 if __name__ == "__main__":

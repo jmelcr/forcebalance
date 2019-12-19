@@ -5,7 +5,12 @@
 @author Lee-Ping Wang
 @date 12/2011
 """
+from __future__ import division
+from __future__ import print_function
 
+from builtins import zip
+from builtins import str
+from builtins import range
 import os, sys
 import re
 from forcebalance.nifty import *
@@ -125,7 +130,7 @@ def edit_mdp(fin=None, fout=None, options={}, defaults={}, verbose=False):
     if fout != None:
        file_out = wopen(fout) 
        for line in out:
-           print >> file_out, line
+           print(line, file=file_out)
        file_out.close()
     if verbose:
         printcool_dictionary(options, title="%s -> %s with options:" % (fin, fout))
@@ -153,9 +158,9 @@ def write_ndx(fout, grps, fin=None):
     ndxgrps.update(grps)
     outf = wopen(fout)
     for name, nums in ndxgrps.items():
-        print >> outf, '[ %s ]' % name
+        print('[ %s ]' % name, file=outf)
         for subl in list(grouper(nums, 15)):
-            print >> outf, ' '.join(["%4i" % i for i in subl]) + ' '
+            print(' '.join(["%4i" % i for i in subl]) + ' ', file=outf)
     outf.close()
 
 ## VdW interaction function types
@@ -687,16 +692,16 @@ class GMX(Engine):
                             break
                     topol = open(self.top).readlines()
                     with wopen(self.top) as f:
-                        print >> f, "#include \"%s\"" % itpfnm
-                        print >> f
+                        print("#include \"%s\"" % itpfnm, file=f)
+                        print(file=f)
                         for line in topol:
-                            print >> f, line,
+                            print(line, end=' ', file=f)
                     # warn_press_key("None of the force field files %s are referenced in the .top file. "
                     #                "Are you referencing the files through C preprocessor directives?" % self.FF.fnms)
 
         ## Write out the trajectory coordinates to a .gro file.
         if hasattr(self, 'target') and hasattr(self.target,'shots'):
-            self.mol.write("%s-all.gro" % self.name, select=range(self.target.shots))
+            self.mol.write("%s-all.gro" % self.name, selection=range(self.target.shots))
         else:
             self.mol.write("%s-all.gro" % self.name)
         self.mol[0].write('%s.gro' % self.name)
@@ -866,7 +871,7 @@ class GMX(Engine):
                     except: pass
         return energyterms
 
-    def optimize(self, shot=0, crit=1e-4, **kwargs):
+    def optimize(self, shot, crit=1e-4, align=True, **kwargs):
         
         """ Optimize the geometry and align the optimized geometry to the starting geometry. """
 
@@ -898,7 +903,7 @@ class GMX(Engine):
         rmsd = M.ref_rmsd(0)[1]
         M[1].write("%s-min.gro" % self.name)
 
-        return E / 4.184, rmsd
+        return E / 4.184, rmsd, M[1]
 
     def evaluate_(self, force=False, dipole=False, traj=None):
 
@@ -934,8 +939,8 @@ class GMX(Engine):
         ## Calculate and record force
         if force:
             self.callgmx("g_traj -xvg no -s %s.tpr -f %s.trr -of %s-f.xvg -fp" % (self.name, self.name, self.name), stdin='System')
-            Result["Force"] = np.array([[float(j) for i, j in enumerate(line.split()[1:]) if self.AtomMask[i/3]] \
-                                            for line in open("%s-f.xvg" % self.name).readlines()])
+            Result["Force"] = np.array([[float(j) for i, j in enumerate(line.split()[1:]) if self.AtomMask[int(i/3)]] \
+                                        for line in open("%s-f.xvg" % self.name).readlines()])
         ## Calculate and record dipole
         if dipole:
             self.callgmx("g_dipoles -s %s.tpr -f %s -o %s-d.xvg -xvg no" % (self.name, traj if traj else '%s.gro' % self.name, self.name), stdin="System\n")
@@ -1224,9 +1229,18 @@ class GMX(Engine):
         # Default options if not user specified.
         md_defs = OrderedDict()
 
+        # Read the provided mdp_opts file.
+        # This contains information on the number of coupling groups
+        # which affects the proper formatting of ref_t and ref_p
+        mdp_opts = edit_mdp(fin='%s.mdp' % self.name)
+        if temperature is not None:
+            ref_t_str = ' '.join(["%f" % temperature]*len(mdp_opts.get('tc_grps', 'System').split()))
+        if pressure is not None:
+            ref_p_str = ' '.join(["%f" % pressure]*len(mdp_opts.get('tc_grps', 'System').split()))
+
         warnings = []
         if temperature is not None:
-            md_opts["ref_t"] = temperature
+            md_opts["ref_t"] = ref_t_str
             md_opts["gen_vel"] = "no"
             md_defs["tc_grps"] = "System"
             md_defs["tcoupl"] = "v-rescale"
@@ -1234,7 +1248,7 @@ class GMX(Engine):
         if self.pbc:
             md_opts["comm_mode"] = "linear"
             if pressure is not None:
-                md_opts["ref_p"] = pressure
+                md_opts["ref_p"] = ref_p_str
                 md_defs["pcoupl"] = "parrinello-rahman"
                 md_defs["tau_p"] = 1.5
         else:
@@ -1255,7 +1269,7 @@ class GMX(Engine):
         if minimize:
             min_opts = OrderedDict([("integrator", "steep"), ("emtol", 10.0), ("nsteps", 10000)])
             if verbose: logger.info("Minimizing energy... ")
-            self.optimize(min_opts=min_opts)
+            self.optimize(0, min_opts=min_opts)
             if verbose: logger.info("Done\n")
             gro1="%s-min.gro" % self.name
         else:
@@ -1487,6 +1501,8 @@ class Liquid_GMX(Liquid):
         # Dictionary of last frames.
         self.LfDict = OrderedDict()
         self.LfDict_New = OrderedDict()
+        # These functions need to be called after self.nptfiles is populated
+        self.post_init(options)
 
     def npt_simulation(self, temperature, pressure, simnum):
             """ Submit a NPT simulation to the Work Queue. """
@@ -1547,7 +1563,7 @@ class Lipid_GMX(Lipid):
             """ Submit a NPT simulation to the Work Queue. """
             if "n_ic" in self.RefData:
                 # Get PT state information.
-                phase_reorder = zip(*self.PhasePoints)
+                phase_reorder = list(zip(*self.PhasePoints))
                 t_index = [i for i, x in enumerate(phase_reorder[0]) if x == temperature] 
                 p_index = [i for i, x in enumerate(phase_reorder[1]) if x == pressure] 
                 p_u = phase_reorder[-1][list(set(t_index) & set(p_index))[0]]

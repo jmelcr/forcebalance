@@ -6,7 +6,12 @@ modules for other programs because it's so simple.
 @author Lee-Ping Wang
 @date 01/2012
 """
+from __future__ import division
+from __future__ import print_function
 
+from builtins import str
+from builtins import zip
+from builtins import range
 import os, shutil
 from re import match, sub
 from forcebalance.nifty import *
@@ -294,7 +299,7 @@ def write_key(fout, options, fin=None, defaults={}, verbose=False, prmfnm=None, 
     # Finally write the key file.
     file_out = wopen(fout) 
     for line in out:
-        print >> file_out, line
+        print(line, file=file_out)
     if verbose:
         printcool_dictionary(options, title="%s -> %s with options:" % (fin, fout))
     file_out.close()
@@ -504,12 +509,14 @@ class TINKER(Engine):
         for line in o:
             s = line.split()
             if len(s) == 0: continue
-            if "Atom Type Definition Parameters" in line:
+            # TINKER 8.2.1 -> 8.7.1 changed printout to "Atom Definition Parameters"
+            if "Atom Type Definition Parameters" in line or "Atom Definition Parameters" in line:
                 mode = 1
             if mode == 1:
                 if isint(s[0]): mode = 2
             if mode == 2:
                 if isint(s[0]):
+                    G.add_node(int(s[0]))
                     mass = float(s[5])
                     self.AtomLists['Mass'].append(mass)
                     if mass < 1.0:
@@ -528,14 +535,14 @@ class TINKER(Engine):
                 if isint(s[0]):
                     a = int(s[0])
                     b = int(s[1])
-                    G.add_node(a)
-                    G.add_node(b)
                     G.add_edge(a, b)
                 else: mode = 0
         # Use networkx to figure out a list of molecule numbers.
         if len(list(G.nodes())) > 0:
             # The following code only works in TINKER 6.2
-            gs = list(nx.connected_component_subgraphs(G))
+            gs = [G.subgraph(c).copy() for c in nx.connected_components(G)]
+            # Deprecated in networkx 2.2
+            # gs = list(nx.connected_component_subgraphs(G))
             tmols = [gs[i] for i in np.argsort(np.array([min(list(g.nodes())) for g in gs]))]
             mnodes = [list(m.nodes()) for m in tmols]
             self.AtomLists['MoleculeNumber'] = [[i+1 in m for m in mnodes].index(1) for i in range(self.mol.na)]
@@ -546,7 +553,7 @@ class TINKER(Engine):
             for f in self.FF.fnms: 
                 os.unlink(f)
 
-    def optimize(self, shot=0, method="newton", crit=1e-4):
+    def optimize(self, shot, method="newton", align=True, crit=1e-4):
 
         """ Optimize the geometry and align the optimized geometry to the starting geometry. """
 
@@ -561,13 +568,40 @@ class TINKER(Engine):
         elif method == "bfgs":
             if self.rigid: optprog = "minrigid"
             else: optprog = "minimize"
-
+        else:
+            raise RuntimeError("Incorrect choice of method for TINKER.optimize()")
+        
+        # Actually run the minimize program
         o = self.calltinker("%s %s.xyz %f" % (optprog, self.name, crit))
+
+        ## TODO: TINKER optimizer has some stochastic behavior for converging to different minima
+        ## This is work in progress and should be revisited in the future, along with taking
+        ## a good look at TINKER's "newton" program.
+        # 
+        # if self.rigid: optprog = "minrigid"
+        # else: optprog = "minimize"
+        # if method == "newton":
+        #     # The "Newton" optimizer uses the BFGS optimizer as an initial step
+        #     # in an attempt to avoid optimizing to a saddle point
+        #     first_crit = 1e-2
+        # elif method == "bfgs":
+        #     first_crit = crit
+        # else:
+        #     raise RuntimeError("Incorrect choice of method for TINKER.optimize()")
+        # # Now call the Newton minimizer from the BFGS result
+        # if method == "newton":
+        #     if self.rigid: optprog = "optrigid"
+        #     else: optprog = "optimize"
+        #     o = self.calltinker("%s %s.xyz_2 %f" % (optprog, self.name, crit))
+        #     shutil.move("%s.xyz_3" % self.name, "%s.xyz_2" % self.name)
+        
         # Silently align the optimized geometry.
         M12 = Molecule("%s.xyz" % self.name, ftype="tinker") + Molecule("%s.xyz_2" % self.name, ftype="tinker")
         if not self.pbc:
             M12.align(center=False)
         M12[1].write("%s.xyz_2" % self.name, ftype="tinker")
+        # print("LPW copying %s.xyz2" % self.name)
+        # shutil.copy2("%s.xyz_2" % self.name, "bak.xyz")
         rmsd = M12.ref_rmsd(0)[1]
         cnvgd = 0
         mode = 0
@@ -586,7 +620,7 @@ class TINKER(Engine):
             for line in o:
                 logger.info(str(line) + '\n')
             logger.info("The minimization did not converge in the geometry optimization - printout is above.\n")
-        return E, rmsd
+        return E, rmsd, M12[1]
 
     def evaluate_(self, xyzin, force=False, dipole=False):
 
@@ -799,7 +833,7 @@ class TINKER(Engine):
         # This line actually runs TINKER
         # xyzfnm = sysname+".xyz"
         if optimize:
-            E_, rmsd = self.optimize(shot)
+            E_, rmsd, _ = self.optimize(shot)
             o = self.calltinker("analyze %s.xyz_2 E" % self.name)
             #----
             # Two equivalent ways to get the RMSD, here for reference.
@@ -901,7 +935,7 @@ class TINKER(Engine):
 
         if minimize:
             if verbose: logger.info("Minimizing the energy...")
-            self.optimize(method="bfgs", crit=1)
+            self.optimize(0, method="bfgs", crit=1)
             os.system("mv %s.xyz_2 %s.xyz" % (self.name, self.name))
             if verbose: logger.info("Done\n")
 
@@ -1049,6 +1083,8 @@ class Liquid_TINKER(Liquid):
         # Dictionary of .dyn files used to restart simulations.
         self.DynDict = OrderedDict()
         self.DynDict_New = OrderedDict()
+        # These functions need to be called after self.nptfiles is populated
+        self.post_init(options)
 
     def npt_simulation(self, temperature, pressure, simnum):
         """ Submit a NPT simulation to the Work Queue. """

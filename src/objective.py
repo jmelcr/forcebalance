@@ -1,7 +1,10 @@
 """@package forcebalance.objective
 
 ForceBalance objective function."""
+from __future__ import division
 
+from builtins import range
+from builtins import object
 import sys
 import inspect
 #from implemented import Implemented_Targets
@@ -28,10 +31,22 @@ except:
     logger.warning("Tinker module import failed\n")
 
 try:
-    from forcebalance.openmmio import AbInitio_OpenMM, Liquid_OpenMM, Interaction_OpenMM, BindingEnergy_OpenMM, Moments_OpenMM, Hydration_OpenMM
+    from forcebalance.openmmio import AbInitio_OpenMM, Liquid_OpenMM, Interaction_OpenMM, BindingEnergy_OpenMM, Moments_OpenMM, Hydration_OpenMM, Vibration_OpenMM, OptGeoTarget_OpenMM, TorsionProfileTarget_OpenMM
 except:
     logger.warning(traceback.format_exc())
     logger.warning("OpenMM module import failed; check OpenMM package\n")
+
+try:
+    from forcebalance.smirnoffio import AbInitio_SMIRNOFF, Liquid_SMIRNOFF, Vibration_SMIRNOFF, OptGeoTarget_SMIRNOFF, TorsionProfileTarget_SMIRNOFF, smirnoff_analyze_parameter_coverage
+except:
+    logger.warning(traceback.format_exc())
+    logger.warning("SMIRNOFF module import failed; check SMIRNOFF package\n")
+
+try:
+    from forcebalance.property_estimator_io import PropertyEstimate_SMIRNOFF
+except:
+    logger.warning(traceback.format_exc())
+    logger.warning("property estimator module import failed\n")
 
 try:
     from forcebalance.abinitio_internal import AbInitio_Internal
@@ -46,7 +61,7 @@ except:
     logger.warning("Counterpoise module import failed\n")
 
 try:
-    from forcebalance.amberio import AbInitio_AMBER, Interaction_AMBER, Vibration_AMBER
+    from forcebalance.amberio import AbInitio_AMBER, Interaction_AMBER, Vibration_AMBER, Liquid_AMBER
 except:
     logger.warning(traceback.format_exc())
     logger.warning("Amber module import failed\n")
@@ -68,16 +83,21 @@ Implemented_Targets = {
     'ABINITIO_GMX':AbInitio_GMX,
     'ABINITIO_TINKER':AbInitio_TINKER,
     'ABINITIO_OPENMM':AbInitio_OpenMM,
+    'ABINITIO_SMIRNOFF':AbInitio_SMIRNOFF,
     'ABINITIO_AMBER':AbInitio_AMBER,
     'ABINITIO_INTERNAL':AbInitio_Internal,
     'VIBRATION_TINKER':Vibration_TINKER,
     'VIBRATION_GMX':Vibration_GMX,
     'VIBRATION_AMBER':Vibration_AMBER,
+    'VIBRATION_OPENMM':Vibration_OpenMM,
+    'VIBRATION_SMIRNOFF': Vibration_SMIRNOFF,
     'THERMO_GMX':Thermo_GMX,
     'LIQUID_OPENMM':Liquid_OpenMM,
-    'LIQUID_TINKER':Liquid_TINKER, 
-    'LIQUID_GMX':Liquid_GMX, 
-    'LIPID_GMX':Lipid_GMX, 
+    'LIQUID_SMIRNOFF':Liquid_SMIRNOFF,
+    'LIQUID_TINKER':Liquid_TINKER,
+    'LIQUID_GMX':Liquid_GMX,
+    'LIQUID_AMBER':Liquid_AMBER,
+    'LIPID_GMX':Lipid_GMX,
     'COUNTERPOISE':Counterpoise,
     'THCDF_PSI4':THCDF_Psi4,
     'RDVR3_PSI4':RDVR3_Psi4,
@@ -92,17 +112,25 @@ Implemented_Targets = {
     'MOMENTS_GMX':Moments_GMX,
     'MOMENTS_OPENMM':Moments_OpenMM,
     'HYDRATION_OPENMM':Hydration_OpenMM,
+    'OPTGEO_OPENMM': OptGeoTarget_OpenMM,
+    'OPTGEO_SMIRNOFF': OptGeoTarget_SMIRNOFF,
+    'OPTGEOTARGET_OPENMM': OptGeoTarget_OpenMM,         # LPW: In the future, the user interface should not include the word 'target' in the target name.
+    'OPTGEOTARGET_SMIRNOFF': OptGeoTarget_SMIRNOFF,     # Keeping these two for compatibility with released FB calculation files.
+    'TORSIONPROFILE_OPENMM': TorsionProfileTarget_OpenMM,
+    'TORSIONPROFILE_SMIRNOFF': TorsionProfileTarget_SMIRNOFF,
+    'PROPERTYESTIMATE_SMIRNOFF': PropertyEstimate_SMIRNOFF,
     'REMOTE_TARGET':RemoteTarget,
     }
+
 
 ## This is the canonical lettering that corresponds to : objective function, gradient, Hessian.
 Letters = ['X','G','H']
 
 class Objective(forcebalance.BaseClass):
     """ Objective function.
-    
+
     The objective function is a combination of contributions from the different
-    fitting targets.  Basically, it loops through the targets, gets their 
+    fitting targets.  Basically, it loops through the targets, gets their
     contributions to the objective function and then sums all of them
     (although more elaborate schemes are conceivable).  The return value is the
     same data type as calling the target itself: a dictionary containing
@@ -122,6 +150,7 @@ class Objective(forcebalance.BaseClass):
         self.set_option(options, 'penalty_multiplicative')
         self.set_option(options, 'penalty_hyperbolic_b')
         self.set_option(options, 'penalty_alpha')
+        self.set_option(options, 'penalty_power')
         self.set_option(options, 'normalize_weights')
         ## Work Queue Port (The specific target itself may or may not actually use this.)
         self.set_option(options, 'wq_port')
@@ -130,10 +159,13 @@ class Objective(forcebalance.BaseClass):
 
         ## The list of fitting targets
         self.Targets = []
+        enable_smirnoff_prints = False # extra prints for SMIRNOFF forcefield
         for opts in tgt_opts:
             if opts['type'] not in Implemented_Targets:
                 logger.error('The target type \x1b[1;91m%s\x1b[0m is not implemented!\n' % opts['type'])
                 raise RuntimeError
+            elif opts['type'].endswith("SMIRNOFF"):
+                enable_smirnoff_prints = True
             # Create a target object.  This is done by looking up the
             # Target class from the Implemented_Targets dictionary
             # using opts['type'] as the key.  The object is created by
@@ -145,12 +177,14 @@ class Objective(forcebalance.BaseClass):
         if len(set([Tgt.name for Tgt in self.Targets])) != len([Tgt.name for Tgt in self.Targets]):
             logger.error("The list of target names is not unique!\n")
             raise RuntimeError
+        if enable_smirnoff_prints:
+            smirnoff_analyze_parameter_coverage(forcefield, tgt_opts)
         ## The force field (it seems to be everywhere)
         self.FF = forcefield
         ## Initialize the penalty function.
         self.Penalty = Penalty(self.penalty_type,forcefield,self.penalty_additive,
                                self.penalty_multiplicative,self.penalty_hyperbolic_b,
-                               self.penalty_alpha)
+                               self.penalty_alpha,self.penalty_power)
         ## Obtain the denominator.
         if self.normalize_weights:
             self.WTot = np.sum([i.weight for i in self.Targets])
@@ -166,7 +200,7 @@ class Objective(forcebalance.BaseClass):
 
         printcool_dictionary(self.PrintOptionDict, "Setup for objective function :")
 
-        
+
     def Target_Terms(self, mvals, Order=0, verbose=False, customdir=None):
         ## This is the objective function; it's a dictionary containing the value, first and second derivatives
         Objective = {'X':0.0, 'G':np.zeros(self.FF.np), 'H':np.zeros((self.FF.np,self.FF.np))}
@@ -239,9 +273,10 @@ class Objective(forcebalance.BaseClass):
             color = "\x1b[94m"
             if key in self.ObjDict_Last:
                 Change = True
-                if self.ObjDict[key] <= self.ObjDict_Last[key]:
+                # print(self.ObjDict[key], self.ObjDict_Last[key])
+                if self.ObjDict[key]['x'] <= self.ObjDict_Last[key]['x']:
                     color = "\x1b[92m"
-                elif self.ObjDict[key] > self.ObjDict_Last[key]:
+                elif self.ObjDict[key]['x'] > self.ObjDict_Last[key]['x']:
                     color = "\x1b[91m"
             PrintDict[key] = "% 12.5f % 10.3f %s% 16.5e%s" % (val['x'],val['w'],color,val['x']*val['w'],"\x1b[0m")
             if Change:
@@ -285,7 +320,7 @@ class Objective(forcebalance.BaseClass):
             Objective[Letters[i]] += Extra[i]
         return Objective
 
-class Penalty:
+class Penalty(object):
     """ Penalty functions for regularizing the force field optimizer.
 
     The purpose for this module is to improve the behavior of our optimizer;
@@ -328,33 +363,50 @@ class Penalty:
 
     """
     Pen_Names = {'HYP' : 1, 'HYPER' : 1, 'HYPERBOLIC' : 1, 'L1' : 1, 'HYPERBOLA' : 1,
-                      'PARA' : 2, 'PARABOLA' : 2, 'PARABOLIC' : 2, 'L2': 2, 'QUADRATIC' : 2,
-                      'FUSE' : 3, 'FUSION' : 3, 'FUSE_L0' : 4, 'FUSION_L0' : 4, 'FUSION-L0' : 4,
-                      'FUSE-BARRIER' : 5, 'FUSE-BARRIER' : 5, 'FUSE_BARRIER' : 5, 'FUSION_BARRIER' : 5}
+                 'PARA' : 2, 'PARABOLA' : 2, 'PARABOLIC' : 2, 'L2': 2, 'QUADRATIC' : 2,
+                 'BOX' : 3, 'FUSE' : 4, 'FUSE-L0' : 5, 'FUSE-BARRIER' : 6}
 
-    def __init__(self, User_Option, ForceField, Factor_Add=0.0, Factor_Mult=0.0, Factor_B=0.1, Alpha=1.0):
+    def __init__(self, User_Option, ForceField, Factor_Add=0.0, Factor_Mult=0.0, Factor_B=0.1, Alpha=1.0, Power=2.0):
         self.fadd = Factor_Add
         self.fmul = Factor_Mult
         self.a    = Alpha
         self.b    = Factor_B
+        self.p    = Power
         self.FF   = ForceField
         self.ptyp = self.Pen_Names[User_Option.upper()]
-        self.Pen_Tab = {1 : self.HYP, 2: self.L2_norm, 3: self.FUSE, 4:self.FUSE_L0, 5: self.FUSE_BARRIER}
+        self.Pen_Tab = {1 : self.HYP, 2: self.L2_norm, 3: self.BOX, 4: self.FUSE, 5:self.FUSE_L0, 6: self.FUSE_BARRIER}
         if User_Option.upper() == 'L1':
             logger.info("L1 norm uses the hyperbolic penalty, make sure penalty_hyperbolic_b is set sufficiently small\n")
         elif self.ptyp == 1:
             logger.info("Using hyperbolic regularization (Laplacian prior) with strength %.1e (+), %.1e (x) and tightness %.1e\n" % (Factor_Add, Factor_Mult, Factor_B))
         elif self.ptyp == 2:
-            logger.info("Using parabolic regularization (Gaussian prior) with strength %.1e (+), %.1e (x)\n" % (Factor_Add, Factor_Mult))
+            if Power == 2.0:
+                logger.info("Using parabolic regularization (Gaussian prior) with strength %.1e (+), %.1e (x)\n" % (Factor_Add, Factor_Mult))
+            elif Power > 2.0:
+                logger.info("Using customized L2-regularization with exponent %.1f, strength %.1e (+), %.1e (x)\n" % (Power, Factor_Add, Factor_Mult))
+            else:
+                logger.error("In L2-regularization, penalty_power must be >= 2.0 (currently %.1f)\n" % (Power))
+                raise RuntimeError
         elif self.ptyp == 3:
-            logger.info("Using L1 Fusion Penalty (only relevant for basis set optimizations at the moment) with strength %.1e\n" % Factor_Add)
+            if Power == 2.0:
+                logger.info("Using box-style regularization with exponent %.1f, strength %.1e (+), %.1e (x): same as L2\n" % (Power, Factor_Add, Factor_Mult))
+            elif Power > 2.0:
+                logger.info("Using box-style regularization with exponent %.1f, strength %.1e (+), %.1e (x)\n" % (Power, Factor_Add, Factor_Mult))
+            else:
+                logger.error("In box-style regularization, penalty_power must be >= 2.0 (currently %.1f)\n" % (Power))
+                raise RuntimeError
         elif self.ptyp == 4:
-            logger.info("Using L0-L1 Fusion Penalty (only relevant for basis set optimizations at the moment) with strength %.1e and switching distance %.1e\n" % (Factor_Add, Alpha))
+            logger.info("Using L1 Fusion Penalty (only relevant for basis set optimizations at the moment) with strength %.1e\n" % Factor_Add)
         elif self.ptyp == 5:
+            logger.info("Using L0-L1 Fusion Penalty (only relevant for basis set optimizations at the moment) with strength %.1e and switching distance %.1e\n" % (Factor_Add, Alpha))
+        elif self.ptyp == 6:
             logger.info("Using L1 Fusion Penalty with Log Barrier (only relevant for basis set optimizations at the moment) with strength %.1e and barrier distance %.1e\n" % (Factor_Add, Alpha))
+        if self.ptyp not in (2, 3) and Power != 2.0:
+            logger.error("Custom power %.2f is only supported with L2 or box-style regularization (penalty_type L2 or box)\n" % Power)
+            raise RuntimeError
 
         ## Find exponential spacings.
-        if self.ptyp in [3,4,5]:
+        if self.ptyp in [4,5,6]:
             self.spacings = self.FF.find_spacings()
             printcool_dictionary(self.spacings, title="Starting zeta spacings\n(Pay attention to these)")
 
@@ -391,11 +443,44 @@ class Penalty:
         @return DC2 The Hessian (just a constant)
 
         """
-        mvals = np.array(mvals)
-        DC0 = np.dot(mvals, mvals)
-        DC1 = 2*np.array(mvals)
-        DC2 = 2*np.eye(len(mvals))
+        if self.p == 2.0:
+            mvals = np.array(mvals)
+            DC0 = np.dot(mvals, mvals)
+            DC1 = 2*np.array(mvals)
+            DC2 = 2*np.eye(len(mvals))
+        else:
+            mvals = np.array(mvals)
+            m2 = np.dot(mvals, mvals)
+            p = float(self.p)
+            DC0 = m2**(p/2)
+            DC1 = p*(m2**(p/2-1))*mvals
+            DC2 = p*(m2**(p/2-1))*np.eye(len(mvals))
+            DC2 += p*(p-2)*(m2**(p/2-2))*np.outer(mvals, mvals)
         return DC0, DC1, DC2
+
+    def BOX(self, mvals):
+        """
+        Box-style constraints.  A penalty term of mvals[i]^Power is added for each parameter.
+
+        If Power = 2.0 (default value of penalty_power) then this is the same as L2 regularization.
+        If set to a larger number such as 12.0, then this corresponds to adding a flat-bottomed
+        restraint to each parameter separately.
+
+        @param[in] mvals The parameter vector
+        @return DC0 The norm squared of the vector
+        @return DC1 The gradient of DC0
+        @return DC2 The Hessian (just a constant)
+        """
+
+        if self.p == 2.0:
+            return self.L2_norm(mvals)
+        else:
+            mvals = np.array(mvals)
+            p = float(self.p)
+            DC0 = np.sum(mvals**self.p)
+            DC1 = self.p*(mvals**(self.p-1))
+            DC2 = np.diag(self.p*(self.p-1)*(mvals**(self.p-2)))
+            return DC0, DC1, DC2
 
     def HYP(self, mvals):
         """
@@ -456,7 +541,7 @@ class Penalty:
                 # I will implement them if necessary.
                 # DC2[pi] -= self.b**2*(dp**2 + self.b**2)**-1.5
                 # DC2[pj] += self.b**2*(dp**2 + self.b**2)**-1.5
-                #print "pvals[%i] = %.4f, pvals[%i] = %.4f dp = %.4f" % (pi, pvals[pi], pj, pvals[pj], dp), 
+                #print "pvals[%i] = %.4f, pvals[%i] = %.4f dp = %.4f" % (pi, pvals[pi], pj, pvals[pj], dp),
                 #print "First Derivative = % .4f, Second Derivative = % .4f" % (dp*(dp**2 + self.b**2)**-0.5, self.b**2*(dp**2 + self.b**2)**-1.5)
         return DC0, DC1, np.diag(DC2)
 
@@ -497,7 +582,7 @@ class Penalty:
                 # I will implement them later if necessary.
                 # DC2[pi] -= self.b**2*(dp**2 + self.b**2)**-1.5 - self.a/dp**2
                 # DC2[pj] += self.b**2*(dp**2 + self.b**2)**-1.5 - self.a/dp**2
-                #print "pvals[%i] = %.4f, pvals[%i] = %.4f dp = %.4f" % (pi, pvals[pi], pj, pvals[pj], dp), 
+                #print "pvals[%i] = %.4f, pvals[%i] = %.4f dp = %.4f" % (pi, pvals[pi], pj, pvals[pj], dp),
                 #print "First Derivative = % .4f, Second Derivative = % .4f" % (dp*(dp**2 + self.b**2)**-0.5, self.b**2*(dp**2 + self.b**2)**-1.5)
         return DC0, DC1, np.diag(DC2)
 
@@ -548,16 +633,16 @@ class Penalty:
         #     p = mvals[i]
         #     DC0 += 1e-6*p*p
         #     DC1[i] = 2e-6*p
-            
+
                 # The second derivatives have off-diagonal terms,
                 # but we're not using them right now anyway
                 #DC2[pi,pi] += (hpp - hp**2)*emh
                 #DC2[pi,pj] -= (hpp - hp**2)*emh
                 #DC2[pj,pi] -= (hpp - hp**2)*emh
                 #DC2[pj,pj] += (hpp - hp**2)*emh
-                #print "pvals[%i] = %.4f, pvals[%i] = %.4f dp = %.4f" % (pi, pvals[pi], pj, pvals[pj], dp), 
+                #print "pvals[%i] = %.4f, pvals[%i] = %.4f dp = %.4f" % (pi, pvals[pi], pj, pvals[pj], dp),
                 #print "First Derivative = % .4f, Second Derivative = % .4f" % (dp*(dp**2 + self.b**2)**-0.5, self.b**2*(dp**2 + self.b**2)**-1.5)
-            
+
             #print "grp:", gnm, "dp:", ' '.join(["% .1e" % i for i in dps]), "Contributions:", ' '.join(["% .1e" % i for i in Contribs])
 
         #print DC0, DC1, DC2
